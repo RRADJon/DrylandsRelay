@@ -30,31 +30,55 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Validate overlay
-        run: python3 tools/self_test.py
-
-      - name: Prepare Godot CI templates
         shell: bash
         run: |
           set -euxo pipefail
+          python3 tools/self_test.py
+
+      - name: Prepare Godot export templates
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          DST="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          SRC_EXPORT="/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          SRC_LEGACY="/root/.local/share/godot/templates/${GODOT_VERSION}.stable"
+
           mkdir -p "$HOME/.local/share/godot/export_templates"
-          if [ -d "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" ]; then
-            cp -a "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" \
-              "$HOME/.local/share/godot/export_templates/"
+          rm -rf "$DST"
+
+          if [ -d "$SRC_EXPORT" ]; then
+            echo "Using export templates from $SRC_EXPORT"
+            cp -a "$SRC_EXPORT" "$DST"
+          elif [ -d "$SRC_LEGACY" ]; then
+            echo "Using export templates from $SRC_LEGACY"
+            cp -a "$SRC_LEGACY" "$DST"
+          else
+            echo "ERROR: Could not find Godot export templates in the godot-ci image."
+            echo "Contents of /root/.local/share/godot:"
+            find /root/.local/share/godot -maxdepth 4 -type f -print 2>/dev/null | sort | head -200 || true
+            exit 1
           fi
+
           godot --version
-          test -f "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/web_nothreads_release.zip"
-          ls -lh "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/" | grep web
+          echo "Installed template files:"
+          find "$DST" -maxdepth 1 -type f -printf '%f\n' | sort
+
+          test -s "$DST/web_nothreads_release.zip"
 
       - name: Assemble pinned official Godot TPS foundation
         shell: bash
         run: |
           set -euxo pipefail
+
           rm -rf project
           git init project
           git -C project remote add origin https://github.com/godotengine/tps-demo.git
           git -C project fetch --depth 1 origin "$TPS_COMMIT"
           git -C project checkout --detach FETCH_HEAD
+
           python3 tools/install_overlay.py project
+
           echo "--- Browser export preset ---"
           cat project/export_presets.cfg
           echo "--- Browser renderer settings ---"
@@ -64,21 +88,30 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          godot --headless --rendering-method gl_compatibility --path project --editor --quit-after 45
+          godot --headless --verbose --rendering-method gl_compatibility \
+            --path project --editor --quit-after 45
 
       - name: Export WebGL 2 browser build
         shell: bash
         run: |
           set -euxo pipefail
+
           rm -rf project/build/web
           mkdir -p project/build/web
+
           godot --headless --verbose --rendering-method gl_compatibility \
-            --path project --export-release "Web" build/web/index.html
+            --path project \
+            --export-release "Web" \
+            build/web/index.html
+
+          echo "--- Exported files ---"
+          find project/build/web -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+
           test -s project/build/web/index.html
           test -s project/build/web/index.wasm
           test -s project/build/web/index.pck
+
           touch project/build/web/.nojekyll
-          ls -lh project/build/web
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
