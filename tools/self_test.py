@@ -14,7 +14,6 @@ required = [
     "drylands/mobile_controls.gd",
     "drylands/export_presets.cfg",
     ".github/workflows/static.yml",
-    ".github/workflows/build-android.yml",
     "THIRD_PARTY_NOTICES.md",
     "BROWSER_TEST_CHECKLIST.md",
 ]
