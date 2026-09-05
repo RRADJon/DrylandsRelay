@@ -22,18 +22,38 @@ def patch_project(path: Path) -> None:
     text = replace_once(text, 'config/description="Godot Third Person Shooter with high quality assets and lighting"', 'config/description="Drylands Relay — Godot TPS rebuild"', "description")
     text = replace_once(text, 'run/main_scene="res://main/main.tscn"', 'run/main_scene="res://drylands/game.tscn"', "main scene")
     text = replace_once(text, 'Settings="*res://menu/settings.gd"', 'Settings="*res://menu/settings.gd"\nDrylandsState="*res://drylands/drylands_state.gd"', "autoload")
-    if 'window/handheld/orientation=0' not in text:
-        text = text.replace('[display]\n', '[display]\n\nwindow/handheld/orientation=0\n', 1)
-    if 'renderer/rendering_method.mobile="mobile"' not in text:
-        text = text.replace('[rendering]\n', '[rendering]\nrenderer/rendering_method.mobile="mobile"\n', 1)
-    # Godot 4 Web exports are WebGL 2 and only support the Compatibility renderer.
-    # Keep native Android on Mobile, but make the browser preview explicit and lighter.
+
+    # Browser-first build: make Compatibility the actual project renderer, not
+    # merely a feature-tag override. Godot 4 Web exports only support WebGL 2
+    # through the Compatibility renderer. Native Android can get its Mobile
+    # renderer back when we resume the native export track.
+    if '[rendering]' not in text:
+        text += '\n[rendering]\n'
+    if 'renderer/rendering_method="gl_compatibility"' not in text:
+        text = text.replace('[rendering]\n', '[rendering]\nrenderer/rendering_method="gl_compatibility"\n', 1)
     if 'renderer/rendering_method.web="gl_compatibility"' not in text:
         text = text.replace('[rendering]\n', '[rendering]\nrenderer/rendering_method.web="gl_compatibility"\n', 1)
+
+    # HDR window output is not part of the browser preview path and can trip
+    # platform validation on a compatibility/WebGL export.
+    text = text.replace('window/hdr/request_hdr_output=true', 'window/hdr/request_hdr_output=false')
+
+    if 'window/handheld/orientation=0' not in text:
+        text = text.replace('[display]\n', '[display]\n\nwindow/handheld/orientation=0\n', 1)
+
+    # Keep the browser preview light enough for GitHub Pages/WebGL 2.
     if 'scaling_3d/mode.web=0' not in text:
-        text = text.replace('[rendering]\n', '[rendering]\nscaling_3d/mode.web=0\nscaling_3d/scale.web=0.85\nlights_and_shadows/positional_shadow/atlas_size.web=1024\n', 1)
-    if 'window/hdr/request_hdr_output.web=false' not in text:
-        text = text.replace('window/hdr/request_hdr_output=true', 'window/hdr/request_hdr_output=true\nwindow/hdr/request_hdr_output.web=false', 1)
+        text = text.replace(
+            '[rendering]\n',
+            '[rendering]\nscaling_3d/mode.web=0\nscaling_3d/scale.web=0.85\nlights_and_shadows/positional_shadow/atlas_size.web=1024\n',
+            1,
+        )
+
+    # Single-threaded Web export is intentionally used for widest hosting
+    # compatibility. Keep 3D physics on the main thread as well.
+    if '[physics]' in text and '3d/run_on_separate_thread=false' not in text:
+        text = text.replace('[physics]\n', '[physics]\n3d/run_on_separate_thread=false\n', 1)
+
     path.write_text(text, encoding="utf-8")
 
 
