@@ -20,14 +20,30 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
+    container:
+      image: barichello/godot-ci:4.5.2
+
     steps:
       - name: Checkout Drylands overlay
         uses: actions/checkout@v6
 
       - name: Validate overlay
         run: python3 tools/self_test.py
+
+      - name: Prepare Godot CI templates
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/.local/share/godot/export_templates"
+          if [ -d "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" ]; then
+            cp -a "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" \
+              "$HOME/.local/share/godot/export_templates/"
+          fi
+          godot --version
+          test -f "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/web_nothreads_release.zip"
+          ls -lh "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/" | grep web
 
       - name: Assemble pinned official Godot TPS foundation
         shell: bash
@@ -39,33 +55,16 @@ jobs:
           git -C project fetch --depth 1 origin "$TPS_COMMIT"
           git -C project checkout --detach FETCH_HEAD
           python3 tools/install_overlay.py project
-
-      - name: Install Godot and Web export templates
-        shell: bash
-        run: |
-          set -euxo pipefail
-          curl -L --retry 3 \
-            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" \
-            -o "$RUNNER_TEMP/godot.zip"
-          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
-          chmod +x "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
-          sudo ln -sf "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
-
-          curl -L --retry 3 \
-            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz" \
-            -o "$RUNNER_TEMP/templates.tpz"
-          rm -rf "$RUNNER_TEMP/templates"
-          mkdir -p "$RUNNER_TEMP/templates"
-          unzip -q "$RUNNER_TEMP/templates.tpz" -d "$RUNNER_TEMP/templates"
-          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
-          cp -a "$RUNNER_TEMP/templates/templates/." "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
-          godot --version
+          echo "--- Browser export preset ---"
+          cat project/export_presets.cfg
+          echo "--- Browser renderer settings ---"
+          grep -E 'rendering_method|request_hdr_output|run_on_separate_thread' project/project.godot || true
 
       - name: Import Godot resources
         shell: bash
         run: |
           set -euxo pipefail
-          godot --headless --path project --editor --quit-after 45
+          godot --headless --rendering-method gl_compatibility --path project --editor --quit-after 45
 
       - name: Export WebGL 2 browser build
         shell: bash
@@ -73,7 +72,8 @@ jobs:
           set -euxo pipefail
           rm -rf project/build/web
           mkdir -p project/build/web
-          godot --headless --path project --export-release "Web" build/web/index.html
+          godot --headless --verbose --rendering-method gl_compatibility \
+            --path project --export-release "Web" build/web/index.html
           test -s project/build/web/index.html
           test -s project/build/web/index.wasm
           test -s project/build/web/index.pck
