@@ -22,16 +22,95 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Diagnose checkout
+        run: |
+          set -euxo pipefail
+
+          echo "=== GitHub context ==="
+          echo "repository: $GITHUB_REPOSITORY"
+          echo "ref: $GITHUB_REF"
+          echo "sha: $GITHUB_SHA"
+          echo "workspace: $GITHUB_WORKSPACE"
+
+          echo
+          echo "=== Git status ==="
+          git status
+
+          echo
+          echo "=== Current branch ==="
+          git branch --show-current || true
+
+          echo
+          echo "=== Current commit ==="
+          git log -1 --oneline --decorate
+
+          echo
+          echo "=== All branches ==="
+          git branch -a
+
+          echo
+          echo "=== Files tracked by this commit ==="
+          git ls-tree -r --name-only HEAD | head -n 500
+
+          echo
+          echo "=== Files actually present ==="
+          find "$GITHUB_WORKSPACE" \
+            -not -path "$GITHUB_WORKSPACE/.git/*" \
+            -type f \
+            | sort \
+            | head -n 500
+
+      - name: Locate Godot project
+        run: |
+          set -euxo pipefail
+
+          PROJECT_FILE="$(find "$GITHUB_WORKSPACE" \
+            -type f \
+            -name project.godot \
+            -not -path '*/.git/*' \
+            | head -n 1)"
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo
+            echo "===================================================="
+            echo "ERROR: project.godot is not committed on this branch"
+            echo "===================================================="
+            echo
+            echo "GitHub Actions cannot build files that are only"
+            echo "stored on your computer."
+            echo
+            echo "Make sure the complete Godot project is committed"
+            echo "and pushed to the branch running this workflow."
+            echo
+
+            echo "Current commit:"
+            git log -1 --oneline --decorate
+
+            echo
+            echo "Tracked files:"
+            git ls-tree -r --name-only HEAD
+
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
+
+          echo "Found Godot project:"
+          echo "$PROJECT_FILE"
+
+          echo "PROJECT_FILE=$PROJECT_FILE" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: |
           set -euxo pipefail
 
           sudo apt-get update
-          sudo apt-get install -y \
-            wget \
-            unzip \
-            python3
+          sudo apt-get install -y wget unzip python3
 
       - name: Install Godot 4.5.2
         run: |
@@ -73,51 +152,6 @@ jobs:
             /tmp/godot_templates/templates/. \
             "$HOME/.local/share/godot/export_templates/4.5.2.stable/"
 
-          echo "Installed export templates:"
-          ls -la \
-            "$HOME/.local/share/godot/export_templates/4.5.2.stable"
-
-      - name: Locate Godot project
-        run: |
-          set -euxo pipefail
-
-          PROJECT_FILE="$(find "$GITHUB_WORKSPACE" \
-            -type f \
-            -name project.godot \
-            -not -path '*/.git/*' \
-            | head -n 1)"
-
-          if [ -z "$PROJECT_FILE" ]; then
-            echo "ERROR: Could not find project.godot anywhere in the repository."
-            echo
-            echo "Repository contents:"
-            find "$GITHUB_WORKSPACE" -maxdepth 4 -type f | sort
-            exit 1
-          fi
-
-          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
-
-          echo "Found project.godot:"
-          echo "$PROJECT_FILE"
-
-          echo "Godot project directory:"
-          echo "$PROJECT_DIR"
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "PROJECT_FILE=$PROJECT_FILE" >> "$GITHUB_ENV"
-
-      - name: Show project files
-        run: |
-          set -euxo pipefail
-
-          echo "PROJECT_DIR=$PROJECT_DIR"
-
-          find "$PROJECT_DIR" \
-            -maxdepth 2 \
-            -type f \
-            | sort \
-            | head -n 200
-
       - name: Configure Web-compatible rendering
         run: |
           set -euxo pipefail
@@ -128,12 +162,8 @@ jobs:
           from pathlib import Path
 
           path = Path(os.environ["PROJECT_FILE"])
-
-          print(f"Editing: {path}")
-
           text = path.read_text(encoding="utf-8")
 
-          # Force Compatibility renderer where these settings already exist.
           text = re.sub(
               r'(?m)^renderer/rendering_method="[^"]*"$',
               'renderer/rendering_method="gl_compatibility"',
@@ -146,8 +176,6 @@ jobs:
               text
           )
 
-          # FSR2 is mode 2 and requires Forward+.
-          # Mode 0 is Bilinear and works with Compatibility/Web.
           text = re.sub(
               r'(?m)^scaling_3d/mode\s*=\s*2\s*$',
               'scaling_3d/mode=0',
@@ -161,56 +189,36 @@ jobs:
           )
 
           path.write_text(text, encoding="utf-8")
-
-          print()
-          print("Relevant rendering settings:")
-
-          for line in text.splitlines():
-              if (
-                  "rendering_method" in line
-                  or "scaling_3d" in line
-                  or "renderer/" in line
-              ):
-                  print(line)
           PY
 
-      - name: Verify export preset
+      - name: Verify Web export preset
         run: |
           set -euxo pipefail
 
           if [ ! -f "$PROJECT_DIR/export_presets.cfg" ]; then
-            echo "ERROR: export_presets.cfg was not found."
-            echo "Expected:"
-            echo "$PROJECT_DIR/export_presets.cfg"
+            echo "ERROR: export_presets.cfg is missing."
             exit 1
           fi
 
-          echo "Export presets:"
-          grep -E '^\[preset|^name=' \
-            "$PROJECT_DIR/export_presets.cfg" \
-            || true
-
           if ! grep -q 'name="Web"' "$PROJECT_DIR/export_presets.cfg"; then
+            echo 'ERROR: No export preset named exactly "Web".'
             echo
-            echo 'ERROR: No export preset named exactly "Web" exists.'
-            echo
-            echo "Your preset names are:"
+            echo "Available presets:"
             grep '^name=' "$PROJECT_DIR/export_presets.cfg" || true
             exit 1
           fi
 
-      - name: Import Godot project
+      - name: Import project
         run: |
           set -euxo pipefail
 
           godot \
             --headless \
-            --verbose \
             --rendering-method gl_compatibility \
             --path "$PROJECT_DIR" \
             --import
 
-      - name: Build Web export
+      - name: Export Web build
         run: |
           set -euxo pipefail
 
@@ -227,19 +235,13 @@ jobs:
             --export-release "Web" \
             "$EXPORT_DIR/index.html"
 
-          echo
-          echo "Generated Web files:"
-          find "$EXPORT_DIR" \
-            -maxdepth 2 \
-            -type f \
-            -print
-
-          if [ ! -f "$EXPORT_DIR/index.html" ]; then
-            echo "ERROR: Godot exited without creating index.html."
-            exit 1
-          fi
+          test -f "$EXPORT_DIR/index.html"
 
           echo "EXPORT_DIR=$EXPORT_DIR" >> "$GITHUB_ENV"
+
+          echo
+          echo "Generated files:"
+          find "$EXPORT_DIR" -type f -print
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
