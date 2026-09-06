@@ -25,6 +25,8 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euxo pipefail
+
           sudo apt-get update
           sudo apt-get install -y \
             wget \
@@ -57,59 +59,145 @@ jobs:
             https://github.com/godotengine/godot/releases/download/4.5.2-stable/Godot_v4.5.2-stable_export_templates.tpz \
             -O /tmp/godot_templates.tpz
 
-          mkdir -p ~/.local/share/godot/export_templates/4.5.2.stable
+          rm -rf /tmp/godot_templates
+          mkdir -p /tmp/godot_templates
 
-          unzip -q /tmp/godot_templates.tpz -d /tmp/godot_templates
+          unzip -q \
+            /tmp/godot_templates.tpz \
+            -d /tmp/godot_templates
+
+          mkdir -p \
+            "$HOME/.local/share/godot/export_templates/4.5.2.stable"
 
           cp -r \
-            /tmp/godot_templates/templates/* \
-            ~/.local/share/godot/export_templates/4.5.2.stable/
+            /tmp/godot_templates/templates/. \
+            "$HOME/.local/share/godot/export_templates/4.5.2.stable/"
 
-          ls -la ~/.local/share/godot/export_templates/4.5.2.stable
+          echo "Installed export templates:"
+          ls -la \
+            "$HOME/.local/share/godot/export_templates/4.5.2.stable"
 
-      - name: Configure project for Web Compatibility renderer
+      - name: Locate Godot project
+        run: |
+          set -euxo pipefail
+
+          PROJECT_FILE="$(find "$GITHUB_WORKSPACE" \
+            -type f \
+            -name project.godot \
+            -not -path '*/.git/*' \
+            | head -n 1)"
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: Could not find project.godot anywhere in the repository."
+            echo
+            echo "Repository contents:"
+            find "$GITHUB_WORKSPACE" -maxdepth 4 -type f | sort
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
+
+          echo "Found project.godot:"
+          echo "$PROJECT_FILE"
+
+          echo "Godot project directory:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "PROJECT_FILE=$PROJECT_FILE" >> "$GITHUB_ENV"
+
+      - name: Show project files
+        run: |
+          set -euxo pipefail
+
+          echo "PROJECT_DIR=$PROJECT_DIR"
+
+          find "$PROJECT_DIR" \
+            -maxdepth 2 \
+            -type f \
+            | sort \
+            | head -n 200
+
+      - name: Configure Web-compatible rendering
         run: |
           set -euxo pipefail
 
           python3 <<'PY'
-          from pathlib import Path
+          import os
           import re
+          from pathlib import Path
 
-          path = Path("project/project.godot")
-          text = path.read_text()
+          path = Path(os.environ["PROJECT_FILE"])
 
-          # Web builds use the Compatibility renderer.
+          print(f"Editing: {path}")
+
+          text = path.read_text(encoding="utf-8")
+
+          # Force Compatibility renderer where these settings already exist.
           text = re.sub(
-              r'rendering_method="[^"]*"',
-              'rendering_method="gl_compatibility"',
+              r'(?m)^renderer/rendering_method="[^"]*"$',
+              'renderer/rendering_method="gl_compatibility"',
               text
           )
 
-          # FSR2 requires Forward+, so disable it for this Web build.
-          # Godot scaling mode 0 = Bilinear.
           text = re.sub(
-              r'scaling_3d/mode\s*=\s*2',
+              r'(?m)^renderer/rendering_method\.mobile="[^"]*"$',
+              'renderer/rendering_method.mobile="gl_compatibility"',
+              text
+          )
+
+          # FSR2 is mode 2 and requires Forward+.
+          # Mode 0 is Bilinear and works with Compatibility/Web.
+          text = re.sub(
+              r'(?m)^scaling_3d/mode\s*=\s*2\s*$',
               'scaling_3d/mode=0',
               text
           )
 
-          # Catch the fully-qualified form too.
           text = re.sub(
-              r'rendering/scaling_3d/mode\s*=\s*2',
+              r'(?m)^rendering/scaling_3d/mode\s*=\s*2\s*$',
               'rendering/scaling_3d/mode=0',
               text
           )
 
-          path.write_text(text)
+          path.write_text(text, encoding="utf-8")
 
-          print("Web rendering settings:")
+          print()
+          print("Relevant rendering settings:")
+
           for line in text.splitlines():
               if (
                   "rendering_method" in line
                   or "scaling_3d" in line
+                  or "renderer/" in line
               ):
                   print(line)
           PY
+
+      - name: Verify export preset
+        run: |
+          set -euxo pipefail
+
+          if [ ! -f "$PROJECT_DIR/export_presets.cfg" ]; then
+            echo "ERROR: export_presets.cfg was not found."
+            echo "Expected:"
+            echo "$PROJECT_DIR/export_presets.cfg"
+            exit 1
+          fi
+
+          echo "Export presets:"
+          grep -E '^\[preset|^name=' \
+            "$PROJECT_DIR/export_presets.cfg" \
+            || true
+
+          if ! grep -q 'name="Web"' "$PROJECT_DIR/export_presets.cfg"; then
+            echo
+            echo 'ERROR: No export preset named exactly "Web" exists.'
+            echo
+            echo "Your preset names are:"
+            grep '^name=' "$PROJECT_DIR/export_presets.cfg" || true
+            exit 1
+          fi
 
       - name: Import Godot project
         run: |
@@ -117,29 +205,41 @@ jobs:
 
           godot \
             --headless \
+            --verbose \
             --rendering-method gl_compatibility \
-            --path project \
+            --path "$PROJECT_DIR" \
             --import
 
       - name: Build Web export
         run: |
           set -euxo pipefail
 
-          rm -rf project/build/web
-          mkdir -p project/build/web
+          EXPORT_DIR="$PROJECT_DIR/build/web"
+
+          rm -rf "$EXPORT_DIR"
+          mkdir -p "$EXPORT_DIR"
 
           godot \
             --headless \
             --verbose \
             --rendering-method gl_compatibility \
-            --path project \
-            --export-release "Web" build/web/index.html
+            --path "$PROJECT_DIR" \
+            --export-release "Web" \
+            "$EXPORT_DIR/index.html"
 
-          echo "Export complete."
-          echo "Generated files:"
-          find project/build/web -maxdepth 2 -type f -print
+          echo
+          echo "Generated Web files:"
+          find "$EXPORT_DIR" \
+            -maxdepth 2 \
+            -type f \
+            -print
 
-          test -f project/build/web/index.html
+          if [ ! -f "$EXPORT_DIR/index.html" ]; then
+            echo "ERROR: Godot exited without creating index.html."
+            exit 1
+          fi
+
+          echo "EXPORT_DIR=$EXPORT_DIR" >> "$GITHUB_ENV"
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
@@ -147,7 +247,7 @@ jobs:
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: project/build/web
+          path: ${{ env.EXPORT_DIR }}
 
   deploy:
     environment:
